@@ -14,7 +14,7 @@ from playwright.async_api import Page
 from avito_personal_mcp.navigation import has_authenticated_marker
 
 CHAT_ID_RE = re.compile(r"^[A-Za-z0-9_~-]{3,200}$")
-MAX_MESSAGE_LENGTH = 4000
+MAX_MESSAGE_LENGTH = 1000
 CONFIRMATION_TTL_SECONDS = 120
 
 
@@ -126,14 +126,16 @@ def send_uncertain_result(chat_id: str) -> dict[str, object]:
 async def _current_outgoing_matches(page: Page, text: str) -> int:
     """Count visible outgoing text messages exactly matching ``text``."""
 
-    return await page.locator(
-        '[data-marker="message"][class*="message-base-module-right-"] '
-        '[data-marker="messageText"]'
-    ).evaluate_all(
+    return await page.locator('[data-marker="message"]').evaluate_all(
         """
-        (nodes, expected) => nodes.filter(
-            node => (node.textContent || '').trim() === expected
-        ).length
+        (messages, expected) => messages.filter(message => {
+            const classes = String(message.className || '').split(/\\s+/);
+            const outgoing = classes.some(name =>
+                name.includes('message-base-module-right-') || name.startsWith('right-')
+            );
+            const body = message.querySelector('[data-marker="messageText"]');
+            return outgoing && body && (body.textContent || '').trim() === expected;
+        }).length
         """,
         text,
     )
@@ -177,13 +179,24 @@ async def send_confirmed_message(
     await page.wait_for_timeout(150)
 
     send_button = page.locator('[data-marker="reply/send"]')
-    if await send_button.count() != 1:
-        await composer.fill("")
-        raise SendMessageError("Send control did not appear after entering the message.")
+    form = page.locator('form[data-marker="reply"]')
 
-    # Intentional write action. There is deliberately no retry after this point.
+    # Avito's current messenger uses Enter to submit a textarea-backed form.
+    # Older versions exposed an explicit reply/send button.
+    if await send_button.count() == 1:
+        send_mode = "button"
+    elif await form.count() == 1 and await composer.evaluate("e => e.tagName === 'TEXTAREA'"):
+        send_mode = "enter"
+    else:
+        await composer.fill("")
+        raise SendMessageError("No recognized send action in the current messenger.")
+
+    # One intentional UI send attempt; never retry an ambiguous click/keypress.
     try:
-        await send_button.click()
+        if send_mode == "button":
+            await send_button.click()
+        else:
+            await composer.press("Enter")
     except Exception:
         return send_uncertain_result(chat_id)
 

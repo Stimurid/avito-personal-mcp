@@ -49,9 +49,9 @@ def normalize_message(raw: dict[str, Any]) -> dict[str, Any]:
     """Normalize one message from the observed Avito messenger DOM."""
 
     direction_class = _clean(raw.get("direction_class"))
-    if direction_class and "message-base-module-right-" in direction_class:
+    if direction_class and ("message-base-module-right-" in direction_class or direction_class.startswith('right-')):
         direction = "outgoing"
-    elif direction_class and "message-base-module-left-" in direction_class:
+    elif direction_class and ("message-base-module-left-" in direction_class or direction_class.startswith('left-')):
         direction = "incoming"
     else:
         direction = "unknown"
@@ -102,6 +102,11 @@ async def discover_chat_messages(
         )
 
     await page.wait_for_timeout(750)
+    # Recently created channels hydrate messages after the messenger shell renders.
+    for _ in range(16):
+        if await page.locator('[data-marker="message"]').count() > 0:
+            break
+        await page.wait_for_timeout(250)
 
     raw = await page.evaluate(
         r"""
@@ -123,7 +128,7 @@ async def discover_chat_messages(
                         ? message.className.split(/\s+/).filter(Boolean)
                         : [];
                     const directionClass = classNames.find(name =>
-                        /message-base-module-(left|right)-/.test(name)
+                        /message-base-module-(left|right)-/.test(name) || /^(left|right)-/.test(name)
                     ) || null;
                     const time = message.querySelector('time[datetime]');
 

@@ -4,7 +4,7 @@ from __future__ import annotations
 
 import re
 from typing import Any, TypedDict
-from urllib.parse import urljoin
+from urllib.parse import urljoin, urlencode, urlsplit, parse_qs
 
 from playwright.async_api import Page
 from playwright.async_api import TimeoutError as PlaywrightTimeoutError
@@ -295,41 +295,18 @@ async def _apply_sort(page: Page, sort: str) -> None:
 
 
 async def _submit_search_form(page: Page, origin: str, query: str) -> None:
-    """Submit Avito's observed normal search form instead of guessing search URLs."""
-
-    # Start from Avito's normal home page so the search is not accidentally
-    # scoped to whichever listing/category tab happened to be selected by CDP.
+    """Navigate using Avito's regular public search URL; await hydrated cards."""
+    observed = parse_qs(urlsplit(page.url).query).get('q', [''])[0]
+    if observed.strip().casefold() == query.strip().casefold():
+        if await _results_ready(page, SERP_SELECTOR, TITLE_SELECTOR):
+            return
+    target = f"{origin}/all?{urlencode({'q': query})}"
     try:
-        response = await page.goto(origin, wait_until="domcontentloaded", timeout=10_000)
+        response = await page.goto(target, wait_until="domcontentloaded", timeout=30_000)
     except PlaywrightTimeoutError as exc:
-        raise SearchDiscoveryError("Avito home page did not reach DOM content in time") from exc
+        raise SearchDiscoveryError("Avito search page did not load") from exc
     if response is not None and response.status >= 400:
-        raise SearchDiscoveryError(f"Avito home page returned HTTP {response.status}")
-
-    search_input = page.locator(SEARCH_INPUT_SELECTOR).first
-    submit_button = page.locator(SEARCH_SUBMIT_SELECTOR).first
-    if not await search_input.count() or not await submit_button.count():
-        raise SearchDiscoveryError("Avito search form did not match the observed page structure")
-
-    await search_input.fill(query)
-
-    # Avito can render an enabled button before the client-side search action
-    # has finished attaching after a value change. Waiting for that observed UI
-    # settling interval before the one normal click is more reliable than
-    # guessing URL state or issuing a duplicate action.
-    await page.wait_for_timeout(1_500)
-    before_url = page.url
-    await submit_button.click()
-    try:
-        await page.wait_for_url(lambda url: str(url) != before_url, timeout=10_000)
-    except PlaywrightTimeoutError as exc:
-        raise SearchDiscoveryError(
-            "Avito search action did not navigate from the home page"
-        ) from exc
-
-    # Avito briefly passes through an intermediate blank DOM before the final
-    # SERP hydrates. Poll the live document and require both the root and at
-    # least one real listing title before parsing.
+        raise SearchDiscoveryError(f"Avito search page returned HTTP {response.status}")
     await _wait_for_hydrated_results(page, "search")
 
 
@@ -375,6 +352,8 @@ async def search_avito(
             };
 
             const findCard = (titleEl) => {
+                const rootCard = titleEl.closest('[data-marker="item"]');
+                if (rootCard) return rootCard;
                 let el = titleEl.parentElement;
                 for (let depth = 0; el && depth < 12; depth++, el = el.parentElement) {
                     if (el.matches?.('[data-marker="item"]')) {
@@ -401,7 +380,9 @@ async def search_avito(
                     id: null,
                     href,
                     title: (titleEl.textContent || '').trim() || null,
-                    price: text(card, 'item-price-value') || text(card, 'item-price'),
+                    price: text(card, 'item-price-value') || text(card, 'item-price') ||
+                        ([...(card?.querySelectorAll('h4') || [])].find(
+                            e => (e.textContent || '').includes('₽'))?.textContent || '').trim() || null,
                     location: text(card, 'item-location'),
                     date: text(card, 'item-date'),
                     seller: text(card, 'seller-info/summary'),
