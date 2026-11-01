@@ -34,7 +34,9 @@ Read-only tools:
 - `avito_selfcheck`
 - `avito_me`
 - `avito_search`
-- `avito_get_listing`
+- `avito_get_listing` (text only, evidence status NOT_REVIEWED)
+- `avito_review_listing` (adaptive full description and original photo gallery as real MCP image blocks)
+- `avito_get_listing_photo` (one indexed full-resolution photo)
 - `avito_my_listings`
 - `avito_favorites`
 - `avito_chats`
@@ -44,7 +46,21 @@ Guarded write tools:
 
 - `avito_send_message`
 
-`avito_send_message` is deliberately two-step. The first call only returns a sanitized preview and a short-lived one-time confirmation token. A second call with the same chat id, the same message text, and that token performs one send attempt. The MCP does not automatically retry a send because a retry could create a duplicate message.
+`avito_send_message` is deliberately two-step. The first call only returns a sanitized preview and a short-lived one-time confirmation token. A second call with the same chat id, the same message text, and that token performs one send attempt. The MCP does not automatically retry a send because a retry could create a duplicate message. A technical confirmation token is NOT evidence of user consent: assistants must receive explicit permission from the user for each outbound seller action.
+
+### Adaptive listing photo review (v0.2)
+
+The text-only avito_get_listing tool does NOT include gallery photographs. When evaluating SSD SMART, motherboard revisions, chair condition, or other photo-dependent details, use avito_review_listing with mode=auto (default). It returns the full listing description, metadata and one actual MCP image block for each observed gallery photo, in order. The separate avito_get_listing_photo tool retrieves any 1-based photo index.
+
+- AUTO evaluation: all available gallery images; FULL, PARTIAL or NO_PHOTOS result.
+- AUTO with purpose=price_only, availability_only, quick_lookup, search or summary: TEXT_ONLY.
+- Explicit mode=text_only: SKIPPED_BY_USER (no photo download, no obstruction).
+- Explicit mode=full: attempts full gallery regardless of quick purpose.
+- Gallery failure: PARTIAL with errors, analysis of available material may continue.
+
+FULL means all images have been acquired and returned. It does NOT certify that an agent has semantically inspected them. Agents must actually view the image content before interpreting embedded text or claiming a complete visual examination. Search results are always discovery only.
+
+The OpenClaw/Monitor MCP exposes the equivalent review_avito_listing and get_avito_listing_photo tools via a read-only local bridge. The authoritative contract is FULL_LISTING_REVIEW_CONTRACT.md in the Avito MCP stack.
 
 ## Requirements
 

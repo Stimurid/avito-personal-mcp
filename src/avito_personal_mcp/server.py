@@ -2,7 +2,10 @@
 
 from __future__ import annotations
 
+import json
+
 from mcp.server import MCPServer
+from mcp.server.mcpserver import Image
 
 from avito_personal_mcp import __version__
 from avito_personal_mcp.browser import connect_to_chrome, find_avito_page, list_open_pages
@@ -14,6 +17,7 @@ from avito_personal_mcp.chats import ChatsDiscoveryError, discover_chats
 from avito_personal_mcp.config import Settings
 from avito_personal_mcp.favorites import FavoritesDiscoveryError, discover_favorites
 from avito_personal_mcp.listing_detail import ListingDetailError, discover_listing_detail
+from avito_personal_mcp.listing_review import review_listing as capture_listing_evidence
 from avito_personal_mcp.listings import ListingsDiscoveryError, discover_own_listings
 from avito_personal_mcp.profile import ProfileDiscoveryError, discover_current_profile
 from avito_personal_mcp.search import SearchDiscoveryError, search_avito
@@ -141,6 +145,14 @@ async def avito_get_listing(reference: int | str) -> dict[str, object]:
 
     A bare numeric ID is resolved only from the authenticated user's rendered
     listings. The tool never manufactures a public Avito URL from an ID.
+
+    EVIDENCE LIMITATION: this tool returns text fields, NOT gallery images.
+    By default, detailed evaluation should visually inspect the full gallery
+    via avito_review_listing; quick lookups and explicit user instructions may
+    skip images. SMART, PCB revisions and defects may only be in the photos.
+    Missing images must be acknowledged without blocking other useful analysis.
+    DO NOT SEND any seller message without the user's explicit prior consent;
+    a technical confirmation token is not evidence of user authorization.
     """
 
     settings = Settings.from_env()
@@ -171,7 +183,93 @@ async def avito_get_listing(reference: int | str) -> dict[str, object]:
         return {
             "status": "ok",
             "listing": listing,
+            "evidence_status": "NOT_REVIEWED",
+            "evidence_note": "Text details only. For photos and detailed assessment use avito_review_listing; no completeness claimed.",
+            "seller_message_authorized": False,
         }
+    finally:
+        await session.close()
+
+
+@mcp.tool(structured_output=False)
+async def avito_review_listing(
+    reference: int | str,
+    mode: str = "auto",
+    purpose: str = "evaluation",
+    skip_reason: str = "",
+) -> list:
+    """Adaptive listing review: full text plus ALL full-size gallery images.
+
+    AUTO reads all photos for product evaluation, but uses TEXT_ONLY for
+    quick_lookup/price_only/availability_only/search/summary. Explicit
+    mode=text_only skips photos without blocking evaluation, and full forces
+    photo capture. No-photograph and partially accessible listings can proceed
+    with transparent evidence_status. FULL means image delivery is complete,
+    NOT that the model has actually visually interpreted their contents.
+    Never contact sellers without the user's explicit separate permission.
+    """
+    settings = Settings.from_env()
+    try:
+        session = await connect_to_chrome(settings)
+    except Exception as exc:
+        return [json.dumps({"status": "chrome_unreachable",
+                            "reason": type(exc).__name__})]
+    try:
+        page = find_avito_page(session, settings.avito_origin)
+        if page is None:
+            return [json.dumps({"status": "no_avito_tab"})]
+        try:
+            summary, photos = await capture_listing_evidence(
+                page, settings.avito_origin, reference,
+                mode=mode, purpose=purpose, skip_reason=skip_reason,
+            )
+        except (ValueError, ListingDetailError, ListingsDiscoveryError) as exc:
+            return [json.dumps({"status": "review_unavailable",
+                                "reason": str(exc)[:260]})]
+        # Actual MCP image blocks, not thumbnails, paths or a bare URL list.
+        result: list = [json.dumps(summary, ensure_ascii=False)]
+        result.extend(
+            Image(data=photo["bytes"], format=photo["mime_type"].split("/")[1])
+            for photo in photos
+        )
+        return result
+    finally:
+        await session.close()
+
+
+@mcp.tool(structured_output=False)
+async def avito_get_listing_photo(reference: int | str, index: int) -> list:
+    """Return exactly one full-resolution photo as an MCP image (1-based index).
+
+    This is a read-only supplementary tool for focused inspection and zooming.
+    A single-photo read cannot certify that the whole gallery was reviewed.
+    """
+    if isinstance(index, bool) or not isinstance(index, int) or not 1 <= index <= 60:
+        return [json.dumps({"status": "invalid_photo_index"})]
+    settings = Settings.from_env()
+    try:
+        session = await connect_to_chrome(settings)
+    except Exception as exc:
+        return [json.dumps({"status": "chrome_unreachable",
+                            "reason": type(exc).__name__})]
+    try:
+        page = find_avito_page(session, settings.avito_origin)
+        if page is None:
+            return [json.dumps({"status": "no_avito_tab"})]
+        try:
+            summary, photos = await capture_listing_evidence(
+                page, settings.avito_origin, reference,
+                mode="full", selected_index=index - 1,
+            )
+        except (ValueError, ListingDetailError, ListingsDiscoveryError) as exc:
+            return [json.dumps({"status": "photo_unavailable",
+                                "reason": str(exc)[:260]})]
+        result: list = [json.dumps(summary, ensure_ascii=False)]
+        result.extend(
+            Image(data=photo["bytes"], format=photo["mime_type"].split("/")[1])
+            for photo in photos
+        )
+        return result
     finally:
         await session.close()
 
